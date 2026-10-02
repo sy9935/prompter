@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>음성 프롬프터</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  /* 레이아웃: 설정 화면(스크립트 입력) → 전체 화면 프롬프터. 어두운 배경, 큰 글자, 읽은 부분은 흐리게 */
+  :root {
+    --bg: #101214;
+    --panel: #1a1d20;
+    --line: #2b3035;
+    --fg: #f2f0ea;
+    --dim: #5d646b;
+    --accent: #ffcf4a;
+    --live: #4fd18b;
+    --warn: #ff6b5a;
+    --size: 40px;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); }
+  body { font-family: "Noto Sans KR", -apple-system, "Apple SD Gothic Neo", sans-serif; -webkit-text-size-adjust: 100%; }
+  button { font: inherit; color: inherit; }
+
+  /* 설정 화면 */
+  #setup { max-width: 640px; margin: 0 auto; padding: max(20px, env(safe-area-inset-top)) 18px max(24px, env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 14px; min-height: 100vh; min-height: 100dvh; }
+  #setup h1 { margin: 0; font-size: 22px; letter-spacing: -0.01em; }
+  #setup p.sub { margin: 0; color: var(--dim); font-size: 14px; line-height: 1.5; }
+  #script { flex: 1; min-height: 240px; width: 100%; resize: none; background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 10px; padding: 14px; font: inherit; font-size: 16px; line-height: 1.6; }
+  #script:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .row label { font-size: 14px; color: var(--dim); }
+  .btn { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; font-size: 16px; cursor: pointer; }
+  .btn.primary { background: var(--accent); color: #17140a; border-color: var(--accent); font-weight: 700; flex: 1; }
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #support { font-size: 13px; color: var(--warn); }
+
+  /* 프롬프터 화면 */
+  #stage { display: none; }
+  body.running #setup { display: none; }
+  body.running #stage { display: block; }
+  #bar { position: fixed; top: 0; left: 0; right: 0; z-index: 5; display: flex; align-items: center; gap: 8px; padding: calc(env(safe-area-inset-top, 0px) + 8px) 12px 8px; background: linear-gradient(var(--bg) 70%, transparent); }
+  #bar .spacer { flex: 1; }
+  .chip { background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 8px 14px; font-size: 15px; cursor: pointer; min-height: 38px; }
+  .chip[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  #dot { width: 10px; height: 10px; border-radius: 50%; background: var(--dim); flex: none; }
+  #dot.on { background: var(--live); box-shadow: 0 0 0 4px rgba(79,209,139,.18); }
+  #dot.err { background: var(--warn); }
+  #status { font-size: 13px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  #text { padding: 38vh 20px 70vh; max-width: 900px; margin: 0 auto; font-size: var(--size); line-height: 1.55; font-weight: 700; letter-spacing: -0.01em; word-break: keep-all; overflow-wrap: break-word; }
+  #text p { margin: 0 0 0.7em; }
+  #text .w { color: var(--fg); transition: color .25s; cursor: pointer; }
+  #text .w.done { color: var(--dim); }
+  #text .w.cur { color: var(--accent); }
+  #speedbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 5; display: none; align-items: center; gap: 12px; padding: 12px 16px calc(env(safe-area-inset-bottom, 0px) + 12px); background: linear-gradient(transparent, var(--bg) 35%); }
+  body.manual #speedbar { display: flex; }
+  #speedbar input { flex: 1; accent-color: var(--accent); }
+  #speedbar span { font-size: 13px; color: var(--dim); }
+</style>
+</head>
+<body>
+
+<main id="setup">
+  <h1>음성 프롬프터</h1>
+  <p class="sub">스크립트를 붙여넣고 시작을 누르세요. 말하는 위치를 따라 글이 내려갑니다. 놓치면 글자를 탭해서 위치를 맞출 수 있어요.</p>
+  <textarea id="script" aria-label="스크립트" spellcheck="false">안녕하세요, 오늘은 음성 프롬프터를 테스트해 보겠습니다.
+이 글은 예시입니다. 아래에 있는 이 문장을 지우고 직접 준비한 스크립트를 붙여넣어 주세요.
+말하는 속도에 맞춰 글자 색이 바뀌고 화면이 천천히 내려갑니다.
+잠깐 쉬어도 괜찮습니다. 다시 말하기 시작하면 이어서 따라갑니다.</textarea>
+  <div class="row">
+    <label for="sizeSel">글자 크기</label>
+    <button class="btn" id="sizeDown" type="button" aria-label="글자 작게">가−</button>
+    <button class="btn" id="sizeUp" type="button" aria-label="글자 크게">가＋</button>
+  </div>
+  <div id="support"></div>
+  <div class="row">
+    <button class="btn primary" id="startVoice" type="button">음성으로 따라가기</button>
+    <button class="btn" id="startManual" type="button">수동 스크롤</button>
+  </div>
+</main>
+
+<section id="stage" aria-live="polite">
+  <div id="bar">
+    <button class="chip" id="back" type="button" aria-label="설정으로 돌아가기">✕</button>
+    <span id="dot"></span><span id="status">준비 중</span>
+    <span class="spacer"></span>
+    <button class="chip" id="pause" type="button" aria-pressed="false">일시정지</button>
+    <button class="chip" id="sm" type="button" aria-label="글자 작게">가−</button>
+    <button class="chip" id="bg" type="button" aria-label="글자 크게">가＋</button>
+  </div>
+  <div id="text"></div>
+  <div id="speedbar"><span>느리게</span><input id="speed" type="range" min="10" max="200" value="50" aria-label="스크롤 속도"><span>빠르게</span></div>
+</section>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+  var spans = [], wordStart = [], wordEnd = [], chars = "";
+  var pos = 0, curIdx = -1;
+  var mode = "voice", running = false, paused = false;
+  var rec = null, wakeLock = null, raf = 0, lastT = 0;
+  var size = 40;
+
+  try {
+    var saved = localStorage.getItem("prompter.script");
+    if (saved) $("script").value = saved;
+    var sz = parseInt(localStorage.getItem("prompter.size"), 10);
+    if (sz >= 20 && sz <= 90) size = sz;
+  } catch (e) {}
+  applySize();
+
+  if (!SR) $("support").textContent = "이 브라우저는 음성 인식을 지원하지 않아요. 수동 스크롤만 쓸 수 있어요.";
+
+  function applySize() { document.documentElement.style.setProperty("--size", size + "px"); }
+  function changeSize(d) {
+    size = Math.max(20, Math.min(90, size + d)); applySize();
+    try { localStorage.setItem("prompter.size", String(size)); } catch (e) {}
+    if (running && curIdx >= 0) scrollToWord(curIdx, false);
+  }
+  $("sizeUp").onclick = $("bg").onclick = function () { changeSize(4); };
+  $("sizeDown").onclick = $("sm").onclick = function () { changeSize(-4); };
+
+  function norm(s) { return s.toLowerCase().replace(/[^0-9a-zㄱ-ㆎ가-힣]/g, ""); }
+
+  function build(text) {
+    var box = $("text"); box.innerHTML = "";
+    spans = []; wordStart = []; wordEnd = []; chars = ""; pos = 0; curIdx = -1;
+    text.split(/\n/).forEach(function (line) {
+      var parts = line.split(/\s+/).filter(Boolean);
+      if (!parts.length) return;
+      var p = document.createElement("p");
+      parts.forEach(function (w, i) {
+        var s = document.createElement("span");
+        s.className = "w"; s.textContent = w;
+        wordStart.push(chars.length);
+        chars += norm(w);
+        wordEnd.push(chars.length);
+        var idx = spans.length;
+        s.addEventListener("click", function () { jumpTo(idx); });
+        spans.push(s);
+        p.appendChild(s);
+        if (i < parts.length - 1) p.appendChild(document.createTextNode(" "));
+      });
+      box.appendChild(p);
+    });
+  }
+
+  function setWord(idx) {
+    if (idx === curIdx) return;
+    var from = Math.max(0, curIdx), to = idx;
+    if (idx < curIdx) { from = idx; to = Math.max(curIdx, idx); }
+    for (var i = Math.min(from, to); i <= Math.max(from, to) && i < spans.length; i++) {
+      spans[i].className = "w" + (i < idx ? " done" : i === idx ? " cur" : "");
+    }
+    curIdx = idx;
+    scrollToWord(idx, true);
+  }
+
+  function scrollToWord(idx, smooth) {
+    var el = spans[idx]; if (!el) return;
+    var y = el.getBoundingClientRect().top + window.scrollY - window.innerHeight * 0.34;
+    window.scrollTo({ top: Math.max(0, y), behavior: smooth ? "smooth" : "auto" });
+  }
+
+  function setPos(p) {
+    pos = p;
+    var i = Math.max(0, curIdx);
+    while (i < spans.length - 1 && wordEnd[i] < pos) i++;
+    setWord(i);
+  }
+
+  function jumpTo(idx) {
+    // 탭한 단어부터 다시 따라가도록 위치를 옮긴다
+    for (var i = 0; i < spans.length; i++) spans[i].className = "w" + (i < idx ? " done" : i === idx ? " cur" : "");
+    curIdx = idx; pos = wordStart[idx] || 0;
+    scrollToWord(idx, true);
+  }
+
+  // 인식된 문장 끝부분을 스크립트의 현재 위치 근처에서 찾아 따라간다
+  function track(raw) {
+    var t = norm(raw);
+    if (t.length < 3) return;
+    var lens = [8, 5, 3];
+    for (var k = 0; k < lens.length; k++) {
+      var L = lens[k];
+      if (t.length < L) continue;
+      var tail = t.slice(-L);
+      var lo = Math.max(0, pos - 15), hi = Math.min(chars.length, pos + 160);
+      var window_ = chars.slice(lo, hi);
+      var best = -1, bestEnd = -1, at = window_.indexOf(tail);
+      while (at !== -1) {
+        var end = lo + at + L;
+        if (best === -1 || Math.abs(end - pos) < Math.abs(bestEnd - pos)) { best = at; bestEnd = end; }
+        at = window_.indexOf(tail, at + 1);
+      }
+      if (best !== -1) { if (bestEnd > pos) setPos(bestEnd); return; }
+    }
+  }
+
+  function setStatus(txt, cls) {
+    $("status").textContent = txt;
+    $("dot").className = cls || "";
+  }
+
+  function startRec() {
+    if (!running || paused || mode !== "voice" || !SR) return;
+    try {
+      rec = new SR();
+      rec.lang = "ko-KR"; rec.continuous = true; rec.interimResults = true;
+      rec.onstart = function () { setStatus("듣는 중", "on"); };
+      rec.onresult = function (e) {
+        var t = "";
+        for (var i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
+        track(t);
+      };
+      rec.onerror = function (e) {
+        if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+          running = false; setStatus("마이크 권한이 필요해요", "err");
+        } else if (e.error === "network") {
+          setStatus("인터넷 연결을 확인하세요", "err");
+        }
+      };
+      rec.onend = function () {
+        if (running && !paused && mode === "voice") setTimeout(startRec, 200);
+      };
+      rec.start();
+    } catch (e) { setTimeout(startRec, 500); }
+  }
+
+  function stopRec() {
+    if (rec) { rec.onend = null; try { rec.stop(); } catch (e) {} rec = null; }
+  }
+
+  function loop(t) {
+    if (!running || mode !== "manual") return;
+    if (!paused) {
+      if (lastT) window.scrollBy(0, parseInt($("speed").value, 10) * (t - lastT) / 1000);
+    }
+    lastT = t; raf = requestAnimationFrame(loop);
+  }
+
+  function acquireWake() {
+    if (!navigator.wakeLock) return;
+    navigator.wakeLock.request("screen").then(function (l) { wakeLock = l; }).catch(function () {});
+  }
+  document.addEventListener("visibilitychange", function () {
+    if (running && document.visibilityState === "visible") acquireWake();
+  });
+
+  function start(m) {
+    var text = $("script").value.trim();
+    if (!text) { $("support").textContent = "스크립트를 먼저 입력해 주세요."; return; }
+    try { localStorage.setItem("prompter.script", $("script").value); } catch (e) {}
+    mode = m; running = true; paused = false;
+    $("pause").setAttribute("aria-pressed", "false"); $("pause").textContent = "일시정지";
+    build(text);
+    document.body.className = "running" + (m === "manual" ? " manual" : "");
+    window.scrollTo(0, 0);
+    acquireWake();
+    if (m === "voice") { setStatus("마이크 켜는 중"); setWord(0); startRec(); }
+    else { setStatus("수동 스크롤"); lastT = 0; raf = requestAnimationFrame(loop); }
+  }
+
+  function stop() {
+    running = false; stopRec(); cancelAnimationFrame(raf);
+    if (wakeLock) { try { wakeLock.release(); } catch (e) {} wakeLock = null; }
+    document.body.className = ""; window.scrollTo(0, 0);
+  }
+
+  $("pause").onclick = function () {
+    paused = !paused;
+    this.setAttribute("aria-pressed", String(paused));
+    this.textContent = paused ? "다시 시작" : "일시정지";
+    if (mode === "voice") { if (paused) { stopRec(); setStatus("일시정지"); } else startRec(); }
+    else lastT = 0;
+  };
+  $("back").onclick = stop;
+  $("startVoice").onclick = function () {
+    if (!SR) { $("support").textContent = "이 브라우저는 음성 인식을 지원하지 않아요."; return; }
+    start("voice");
+  };
+  $("startManual").onclick = function () { start("manual"); };
+})();
+</script>
+</body>
+</html>
